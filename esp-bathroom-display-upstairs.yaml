@@ -1,0 +1,166 @@
+esphome:
+  name: esp-bathroom-display-upstairs
+  friendly_name: "Water Heater Monitor Upstairs Bath"
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  framework:
+    type: esp-idf
+
+# --- CONNECTION & SECURITY ---
+api:
+  encryption:
+    key: "REDACTED"
+
+ota:
+  - platform: esphome
+    password: "REDACTED"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Esp-Bathroom-Display-Upstairs"
+    password: "REDACTED"
+
+captive_portal:
+
+# --- WAVESHARE C6 LCD HARDWARE PINS ---
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO6
+
+output:
+  - platform: ledc
+    pin: GPIO22
+    id: backlight_out
+
+light:
+  - platform: monochromatic
+    output: backlight_out
+    name: "Display Backlight"
+    id: back_light
+    restore_mode: ALWAYS_ON
+
+# --- GRAPHICS & SENSORS ---
+color:
+  - id: color_red
+    red: 100%
+    green: 0%
+    blue: 0%
+  - id: color_orange
+    red: 100%
+    green: 55%  # Increased from 25% to make it less red/more amber
+    blue: 0%
+  - id: color_blue
+    red: 0%
+    green: 0%
+    blue: 100%
+  - id: color_black
+    red: 0%
+    green: 0%
+    blue: 0%
+  - id: color_white
+    red: 100%
+    green: 100%
+    blue: 100%
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_main
+    size: 26
+    # Added space and explicit degree symbol in glyphs
+    glyphs: ' !"%()*-+,.0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~°'
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 18
+    glyphs: ' !"%()*-+,.0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~°'
+
+time:
+  - platform: sntp
+    id: sntp_time
+
+sensor:
+  - platform: homeassistant
+    id: water_temp
+    entity_id: sensor.hot_water_sensor_pipe_water_heater_temperature
+  - platform: homeassistant
+    id: outside_temp
+    entity_id: sensor.gw2000b_outdoor_temperature
+  - platform: internal_temperature
+    name: "ESP Internal Temperature"
+    id: internal_temp
+    update_interval: 60s
+
+display:
+  - platform: st7789v
+    id: s3_display
+    model: CUSTOM
+    height: 320
+    width: 172
+    offset_height: 34
+    offset_width: 0
+    cs_pin: GPIO14
+    dc_pin: GPIO15
+    reset_pin: GPIO21
+    rotation: 0
+    update_interval: 1000ms  # Faster refresh for crisp flashing
+    lambda: |-
+      Color bg_color = id(color_black);
+      Color text_color = id(color_white);
+      float water = id(water_temp).state;
+      float outside = id(outside_temp).state;
+
+      // 1. BACKGROUND LOGIC
+      if (!std::isnan(water)) {
+        if (water >= 87.0f) {
+          bg_color = id(color_red);
+        } 
+        else if (water >= 83.0f) {
+          bg_color = id(color_orange);
+        } 
+        else {
+          // BLUE FLASH: Checks the current second. 
+          // If the second is even, screen is Blue. If odd, screen is Black.
+          if ((millis() / 1000) % 2 == 0) {
+            bg_color = id(color_blue);
+          } else {
+            bg_color = id(color_black);
+          }
+        }
+      }
+
+      it.fill(bg_color);
+      int x_center = it.get_width() / 2;
+
+      // 2. HEADER CLOCK (Large)
+      if (id(sntp_time).now().is_valid()) {
+        it.print(x_center, 30, id(font_main), text_color, TextAlign::CENTER, id(sntp_time).now().strftime("%I:%M%p").c_str());
+      }
+
+      // 3. WATER DATA
+      it.printf(x_center, 75, id(font_main), text_color, TextAlign::CENTER, "Water:");
+      if (!std::isnan(water)) {
+        it.printf(x_center, 115, id(font_main), text_color, TextAlign::CENTER, "%.1f \xc2\xb0" "F", water);
+      } else {
+        it.print(x_center, 115, id(font_main), text_color, TextAlign::CENTER, "---");
+      }
+
+      it.line(15, 155, 157, 155, text_color); 
+
+      // 4. OUTSIDE DATA
+      it.printf(x_center, 190, id(font_main), text_color, TextAlign::CENTER, "Outside:");
+      if (!std::isnan(outside)) {
+        it.printf(x_center, 230, id(font_main), text_color, TextAlign::CENTER, "%.1f \xc2\xb0" "F", outside);
+      } else {
+        it.print(x_center, 230, id(font_main), text_color, TextAlign::CENTER, "---");
+      }
+
+      // 5. FOOTER TIMESTAMP
+      if (id(sntp_time).now().is_valid()) {
+        it.print(x_center, 280, id(font_small), text_color, TextAlign::CENTER, "Last Sync:");
+        it.print(x_center, 305, id(font_small), text_color, TextAlign::CENTER, id(sntp_time).now().strftime("%H:%M").c_str());
+      }
+
+logger:
